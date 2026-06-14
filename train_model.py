@@ -1,11 +1,6 @@
 """
-Phase 2b — Model Training (Fixed Architecture Layout)
-Reads gesture_data.csv → trains TensorFlow classifier → saves model + labels
-
-Run AFTER collect_data.py:
-    python train_model.py
+Phase 2b — Model Training for Arm and Hand Architecture
 """
-
 import os
 import numpy as np
 import pandas as pd
@@ -15,175 +10,114 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 import tensorflow as tf
+from keras import layers, models, callbacks
 
-# ─── Config ───────────────────────────────────────────────────────────────────
 CSV_FILE    = "gesture_data.csv"
 MODEL_OUT   = "gesture_model.keras"
-LABELS_OUT  = "gesture_labels.txt"
 REPORT_OUT  = "training_report.png"
-
-EPOCHS      = 80
+EPOCHS      = 100
 BATCH_SIZE  = 16
-DROPOUT     = 0.4
 SEED        = 42
 
 tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
-# ─── 1. Load data ─────────────────────────────────────────────────────────────
-print("=" * 50)
-print("   Phase 2b — Gesture Model Training")
-print("=" * 50)
-
 if not os.path.exists(CSV_FILE):
-    raise FileNotFoundError(f"[ERROR] {CSV_FILE} not found. Run collect_data.py first.")
+    raise FileNotFoundError(f"[ERROR] Run collect_data.py first to create {CSV_FILE}")
 
-df_test = pd.read_csv(CSV_FILE, nrows=2)
-first_cell = str(df_test.columns[0]).strip().lower()
-has_header = "label" in first_cell or first_cell.startswith("f")
+# --- NEW FIXED CODE ---
+# Change header=None to header=0 to recognize the text headers automatically
+df = pd.read_csv(CSV_FILE, header=0)
+df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
 
-if has_header:
-    df = pd.read_csv(CSV_FILE)
-    df.columns = df.columns.str.strip()
-else:
-    print("[System Note] No valid string header found. Injecting structural column map dynamically...")
-    total_cols = df_test.shape[1]
-    feature_length = total_cols - 1
-    custom_headers = ["label"] + [f"f{i}" for i in range(feature_length)]
-    df = pd.read_csv(CSV_FILE, header=None, names=custom_headers)
-
-print(f"\n[Data] Loaded {len(df)} samples from {CSV_FILE}")
-print(f"[Data] Columns : {df.shape[1]-1} features + 1 label")
-
-print("\n[Data] Samples per gesture:")
-counts = df["label"].value_counts()
-for label, count in counts.items():
-    bar = "█" * (count // 5) if (count // 5) > 0 else "▏"
-    print(f"  {label:<15} {count:>4}  {bar}")
-
-# ─── 2. Prepare features & labels ────────────────────────────────────────────
-X = df.drop("label", axis=1).values.astype(np.float32)
-y_raw = df["label"].values
-
+# Using .iloc is still perfectly safe, but now it only captures the numerical data rows!
+X = df.iloc[:, 1:].values.astype("float32")
+y_raw = df.iloc[:, 0].values
 encoder = LabelEncoder()
 y = encoder.fit_transform(y_raw)
-NUM_CLASSES = len(encoder.classes_)
+num_classes = len(encoder.classes_)
 
-print(f"\n[Labels] {NUM_CLASSES} gestures: {list(encoder.classes_)}")
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=SEED)
 
-with open(LABELS_OUT, "w") as f:
-    for label in encoder.classes_:
-        f.write(label + "\n")
-print(f"[Labels] Saved to {LABELS_OUT}")
+model = models.Sequential([
+    layers.Input(shape=(X_train.shape[1],)),
+    layers.Dense(128, activation='relu'),
+    layers.BatchNormalization(),
+    layers.Dropout(0.3),
+    layers.Dense(64, activation='relu'),
+    layers.BatchNormalization(),
+    layers.Dropout(0.3),
+    layers.Dense(32, activation='relu'),
+    layers.BatchNormalization(),
+    layers.Dense(num_classes, activation='softmax')
+])
 
-# ─── 3. Normalize features ────────────────────────────────────────────────────
-X_min = X.min(axis=0)
-X_max = X.max(axis=0)
-denom = (X_max - X_min)
-denom[denom == 0] = 1.0  
-X_norm = (X - X_min) / denom
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+              loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
-np.save("feature_min.npy", X_min)
-np.save("feature_max.npy", X_max)
-print("[Norm] Saved feature_min.npy / feature_max.npy")
+# Restores the exact mathematically optimal weights cleanly
+early_stop = callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+lr_decay = callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-5)
 
-# ─── 4. Train / validation split ─────────────────────────────────────────────
-X_train, X_val, y_train, y_val = train_test_split(
-    X_norm, y, test_size=0.2, random_state=SEED, stratify=y
-)
-print(f"\n[Split] Train: {len(X_train)}  |  Val: {len(X_val)}")
+print("\n[➔] Training Model on Arm & Hand Vectors...")
+history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
+                    epochs=EPOCHS, batch_size=BATCH_SIZE, callbacks=[early_stop, lr_decay], verbose=1)
 
-# ─── 5. Build model ───────────────────────────────────────────────────────────
-FEATURE_DIM = X_train.shape[1]
-
-# ปรับการดึง Layers ผ่าน tf.keras โดยตรง เพื่อรองรับ TensorFlow 2.16+ อย่างสมบูรณ์
-model = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(FEATURE_DIM,)),
-
-    tf.keras.layers.Dense(256, activation="relu"),
-    tf.keras.layers.BatchNormalization(),
-    tf.keras.layers.Dropout(DROPOUT),
-
-    tf.keras.layers.Dense(128, activation="relu"),
-    tf.keras.layers.BatchNormalization(),
-    tf.keras.layers.Dropout(DROPOUT),
-
-    tf.keras.layers.Dense(64, activation="relu"),
-    tf.keras.layers.Dropout(DROPOUT * 0.5),
-
-    tf.keras.layers.Dense(NUM_CLASSES, activation="softmax"),
-], name="gesture_classifier")
-
-model.summary()
-
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-    loss="sparse_categorical_crossentropy",
-    metrics=["accuracy"],
-)
-
-# ─── 6. Callbacks ─────────────────────────────────────────────────────────────
-cb_early  = tf.keras.callbacks.EarlyStopping(patience=15, restore_best_weights=True, verbose=1)
-cb_reduce = tf.keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=8, verbose=1)
-cb_ckpt   = tf.keras.callbacks.ModelCheckpoint(MODEL_OUT, save_best_only=True, verbose=1)
-
-# ─── 7. Train ─────────────────────────────────────────────────────────────────
-print("\n[Train] Starting...\n")
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
-    callbacks=[cb_early, cb_reduce, cb_ckpt],
-    verbose=1,
-)
-
-# ─── 8. Evaluate ──────────────────────────────────────────────────────────────
-print("\n[Eval] Best model on validation set:")
-loss, acc = model.evaluate(X_val, y_val, verbose=0)
-print(f"  Accuracy : {acc*100:.1f}%")
-print(f"  Loss     : {loss:.4f}")
-
+# CRITICAL FIX: Save components FIRST so weights are locked, or run prediction now 
+# that .fit() has closed and restored the optimal weight states.
+print("\n[➔] Evaluating model prediction states using restored optimal weights...")
 y_pred = np.argmax(model.predict(X_val, verbose=0), axis=1)
-print("\n[Classification Report]")
+
+print("\n=== CLASSIFICATION REPORT ===")
 print(classification_report(y_val, y_pred, target_names=encoder.classes_))
 
-# ─── 9. Plot training curves + confusion matrix ───────────────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(16, 4))
-fig.suptitle("Gesture Model — Training Report", fontsize=14, fontweight="bold")
+# ==========================================
+#        GENERATING TRAINING REPORT
+# ==========================================
+print(f"[➔] Compiling metrics map visual representation into {REPORT_OUT}...")
 
-axes[0].plot(history.history["accuracy"],     label="Train")
-axes[0].plot(history.history["val_accuracy"], label="Val")
-axes[0].set_title("Accuracy"); axes[0].legend(); axes[0].set_xlabel("Epoch")
+# Initialize a grid canvas for curves + confusion matrix layout
+fig = plt.figure(figsize=(15, 5))
+grid = plt.GridSpec(1, 3, wspace=0.3)
 
-axes[1].plot(history.history["loss"],     label="Train")
-axes[1].plot(history.history["val_loss"], label="Val")
-axes[1].set_title("Loss"); axes[1].legend(); axes[1].set_xlabel("Epoch")
+# 1. Accuracy Curve Subplot
+ax_acc = fig.add_subplot(grid[0, 0])
+ax_acc.plot(history.history['accuracy'], label='Train Accuracy', color='#1f77b4', linewidth=2)
+ax_acc.plot(history.history['val_accuracy'], label='Val Accuracy', color='#ff7f0e', linestyle='--', linewidth=2)
+ax_acc.set_title('Model Accuracy History', fontsize=12, fontweight='bold', pad=10)
+ax_acc.set_xlabel('Epochs', fontsize=10)
+ax_acc.set_ylabel('Accuracy Score', fontsize=10)
+ax_acc.grid(True, linestyle=':', alpha=0.6)
+ax_acc.legend(loc='lower right')
 
+# 2. Loss Curve Subplot
+ax_loss = fig.add_subplot(grid[0, 1])
+ax_loss.plot(history.history['loss'], label='Train Loss', color='#d62728', linewidth=2)
+ax_loss.plot(history.history['val_loss'], label='Val Loss', color='#2ca02c', linestyle='--', linewidth=2)
+ax_loss.set_title('Model Loss History', fontsize=12, fontweight='bold', pad=10)
+ax_loss.set_xlabel('Epochs', fontsize=10)
+ax_loss.set_ylabel('Cross-Entropy Loss', fontsize=10)
+ax_loss.grid(True, linestyle=':', alpha=0.6)
+ax_loss.legend(loc='upper right')
+
+# 3. Confusion Matrix Subplot (Now matches saved model exactly)
+ax_cm = fig.add_subplot(grid[0, 2])
 cm = confusion_matrix(y_val, y_pred)
-sns.heatmap(cm, annot=True, fmt="d", ax=axes[2],
-            xticklabels=encoder.classes_,
-            yticklabels=encoder.classes_,
-            cmap="Blues")
-axes[2].set_title("Confusion Matrix")
-axes[2].set_xlabel("Predicted"); axes[2].set_ylabel("Actual")
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False,
+            xticklabels=encoder.classes_, yticklabels=encoder.classes_,
+            annot_kws={"size": 11, "weight": "bold"}, ax=ax_cm)
+ax_cm.set_title('Confusion Matrix Heatmap', fontsize=12, fontweight='bold', pad=10)
+ax_cm.set_xlabel('Predicted Gesture Label', fontsize=10, labelpad=8)
+ax_cm.set_ylabel('True Gesture Label', fontsize=10, labelpad=8)
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
 
-plt.tight_layout()
-plt.savefig(REPORT_OUT, dpi=120)
-print(f"\n[Plot] Saved training report to {REPORT_OUT}")
+# Save the unified visual analytics canvas
+plt.savefig(REPORT_OUT, bbox_inches='tight', dpi=150)
+plt.close()
+print(f"[SUCCESS] Metrics report compiled and exported safely!")
 
-# ─── 10. Summary & Precise Word Export ────────────────────────────────────────
-# บังคับบันทึกคำศัพท์โดยดึงอาเรย์มาจาก encoder โดยตรง ป้องกันคลาสสลับในระบบทำนายผล
-trained_words = list(encoder.classes_)
-np.save('gesture_words.npy', np.array(trained_words))
-
-print("\n" + "=" * 50)
-print("   Training complete!")
-print(f"   Model  → {MODEL_OUT}")
-print(f"   Labels → {LABELS_OUT}")
-print(f"   Report → {REPORT_OUT}")
-print(f"   Words  → gesture_words.npy (Locked Sequence)")
-print(f"   Val accuracy: {acc*100:.1f}%")
-print("=" * 50)
-print(f"[SYSTEM] Exported unique array: {trained_words}")
-print("\nNext: run phase3_inference.py to test live predictions.")
+# Save necessary translation assets
+np.save('gesture_words.npy', np.array(list(encoder.classes_)))
+model.save(MODEL_OUT)
+print(f"[SUCCESS] Exported components to {MODEL_OUT} and gesture_words.npy")
