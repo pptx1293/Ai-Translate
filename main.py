@@ -1,6 +1,6 @@
 import collections
 import time
-
+import app
 import cv2
 import mediapipe as mp
 import tst
@@ -191,6 +191,7 @@ while cap.isOpened():
 
     if has_hand:
         gesture, conf = tst.translate_frame(results)
+        app.latest_word = gesture
         gesture       = gesture.strip().upper()
         if gesture == "SPACE":
             gesture = " "
