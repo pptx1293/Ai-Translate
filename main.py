@@ -1,15 +1,16 @@
-"""
-main.py — Live Gesture Recognition (Arm & Hand ONLY, No Face)
-
-Press  Q = quit  |  C = clear sentence  |  Z = undo last word
-"""
-
 import collections
 import time
 
 import cv2
 import mediapipe as mp
 import tst
+
+# Safe wrapper — works even if tst.py is an older version without reset_smooth_buffer
+def _reset_tst_buffer():
+    if hasattr(tst, "reset_smooth_buffer"):
+        tst.reset_smooth_buffer()
+    elif hasattr(tst, "_prob_buffer"):
+        tst._prob_buffer.clear()
 
 # ── Resolution ───────────────────────────────────────────────────────────────
 TARGET_W, TARGET_H = 1280, 720
@@ -68,22 +69,12 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_H)
 cap.set(cv2.CAP_PROP_FPS, 30)
 
 print("[START] Face pipeline OFF — using separate Hands + Pose.")
-print("        Q=quit  C=clear  Z=undo")
+print("Q=quit  C=clear  Z=undo")
 
 
 # ── Result wrapper ────────────────────────────────────────────────────────────
 class _Results:
-    """
-    Wraps separate Hands + Pose detections into the same attribute shape
-    that tst.translate_frame() expects.
 
-    IMPORTANT — handedness after cv2.flip(frame, 1):
-      The frame is flipped BEFORE being passed to MediaPipe.
-      MediaPipe Hands sees the mirrored image and reports:
-        "Left"  = physically the user's RIGHT hand
-        "Right" = physically the user's LEFT hand
-      So we store them SWAPPED relative to the MP label.
-    """
     def __init__(self, hands_res, pose_res):
         self.pose_landmarks       = pose_res.pose_landmarks if pose_res else None
         self.left_hand_landmarks  = None
@@ -160,7 +151,7 @@ def _draw_hud(frame, gesture: str, conf: float) -> None:
     cv2.putText(frame, f"LIVE: {gesture}  ({conf * 100:.1f}%)",
                 (18, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.60, CLR_WHITE, 1)
 
-    words   = " ".join(sentence) or "(empty)"
+    words   = "".join(sentence) or "(empty)"
     display = words if len(words) <= 55 else "…" + words[-54:]
     cv2.putText(frame, f"SENTENCE: {display}",
                 (18, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.65, CLR_CYAN, 2)
@@ -201,7 +192,8 @@ while cap.isOpened():
     if has_hand:
         gesture, conf = tst.translate_frame(results)
         gesture       = gesture.strip().upper()
-
+        if gesture == "SPACE":
+            gesture = " "
         if conf >= CONFIDENCE_THRESHOLD:
             gesture_buffer.append(gesture)
         else:
@@ -213,6 +205,7 @@ while cap.isOpened():
             stable = gesture_buffer[0]
     else:
         gesture_buffer.clear()
+        _reset_tst_buffer()
 
     # ── State machine ──────────────────────────────────────────────────────
     now = time.time()
@@ -220,21 +213,24 @@ while cap.isOpened():
         if stable == "START" and not active:
             active = True
             gesture_buffer.clear()
+            _reset_tst_buffer()
             print("[STATE] Recording STARTED")
 
         elif stable == "STOP" and active:
             active = False
             gesture_buffer.clear()
+            _reset_tst_buffer()
             print("[STATE] Recording STOPPED")
 
         elif active and stable not in CONTROL_GESTURES:
             time_ok = (now - last_append_ts) >= COOLDOWN_SEC
-            novel   = stable != last_word
+            novel   = (stable != last_word)
             if time_ok and novel:
                 sentence.append(stable)
                 last_word      = stable
                 last_append_ts = now
                 gesture_buffer.clear()
+                _reset_tst_buffer()
                 print(f"[WORD]  {stable}  →  {' '.join(sentence)}")
 
     _draw_skeleton(frame, results)
