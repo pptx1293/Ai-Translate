@@ -19,7 +19,7 @@ h5py==3.14.0
 idna==3.18
 itsdangerous==2.2.0
 jax==0.4.34
-jaxlib==0.4.34
+jaxlib>=0.4.34
 Jinja2==3.1.6
 keras==3.14.1
 kiwisolver==1.5.0
