@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>ASLO — Gesture Translator</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b0d10">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0b0d10;
+            --panel: #14171b;
+            --panel-2: #191d22;
+            --border: #232830;
+            --ink: #e8eaed;
+            --muted: #6b7280;
+            --amber: #ff8c1a;
+            --cyan: #22d3c8;
+            --green: #22c55e;
+            --orange: #f5a623;
+            --red: #ef4444;
+            --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            --sans: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            height: 100%;
+            overflow: hidden;
+            /* the whole point: everything fits in one frame */
+        }
+
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            color: var(--ink);
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        button {
+            font-family: var(--sans);
+        }
+
+        button:focus-visible,
+        img:focus-visible {
+            outline: 2px solid var(--cyan);
+            outline-offset: 2px;
+        }
+
+        /* ── Top bar ─────────────────────────────────────────────────────── */
+        .topbar {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel);
+        }
+
+        .brand {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .brand h1 {
+            font-size: clamp(1rem, 3.6vw, 1.25rem);
+            color: var(--amber);
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+
+        .brand .tagline {
+            font-size: 0.7rem;
+            color: var(--muted);
+            white-space: nowrap;
+            display: none;
+        }
+
+        @media (min-width: 560px) {
+            .brand .tagline {
+                display: inline;
+            }
+        }
+
+        .badge {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+
+        .badge::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .badge.running {
+            background: #122017;
+            color: var(--green);
+            border: 1px solid var(--green);
+        }
+
+        .badge.stopped {
+            background: #20151a;
+            color: var(--red);
+            border: 1px solid var(--red);
+        }
+
+        .badge.starting {
+            background: #22190c;
+            color: var(--orange);
+            border: 1px solid var(--orange);
+        }
+
+        .badge.error {
+            background: #260b0b;
+            color: var(--red);
+            border: 1px solid var(--red);
+        }
+
+        /* ── Error banner (overlay, doesn't push layout) ────────────────── */
+        #error-banner {
+            display: none;
+            flex: 0 0 auto;
+            background: #260b0b;
+            color: #ff8a8a;
+            border-bottom: 1px solid var(--red);
+            padding: 6px 16px;
+            font-size: 0.78rem;
+        }
+
+        /* ── Main stage ──────────────────────────────────────────────────── */
+        .stage {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            gap: 1px;
+            background: var(--border);
+        }
+
+        @media (min-width: 880px) {
+            .stage {
+                flex-direction: row;
+            }
+        }
+
+        /* Camera panel */
+        .cam-panel {
+            position: relative;
+            flex: 1 1 56%;
+            min-height: 0;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        #camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+            display: block;
+        }
+
+        .cam-placeholder {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            font-family: var(--mono);
+        }
+
+        .cam-tag {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-family: var(--mono);
+            font-size: 0.68rem;
+            color: var(--muted);
+            background: rgba(0, 0, 0, 0.45);
+            padding: 3px 8px;
+            border-radius: 4px;
+            letter-spacing: 0.5px;
+        }
+
+        /* Console: everything that isn't the camera */
+        .console {
+            flex: 1 1 44%;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg);
+        }
+
+        @media (min-width: 880px) {
+            .console {
+                flex: 0 0 380px;
+            }
+        }
+
+        .panel {
+            flex: 0 0 auto;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel.grow {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel h2 {
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        /* Live gesture readout */
+        #gesture-label {
+            font-family: var(--mono);
+            font-weight: 700;
+            font-size: clamp(1.4rem, 5vw, 2rem);
+            color: var(--amber);
+            line-height: 1.1;
+            margin-bottom: 10px;
+            word-break: break-word;
+        }
+
+        .meter-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .meter-label {
+            flex: 0 0 auto;
+            font-family: var(--mono);
+            font-size: 0.62rem;
+            color: var(--muted);
+            width: 38px;
+        }
+
+        .meter-track {
+            flex: 1 1 auto;
+            height: 7px;
+            background: #20242b;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .meter-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 4px;
+            background: var(--orange);
+            transition: width 0.15s ease, background 0.15s ease;
+        }
+
+        .meter-val {
+            flex: 0 0 auto;
+            font-family: var(--mono);
+            font-size: 0.68rem;
+            color: var(--muted);
+            min-width: 34px;
+            text-align: right;
+        }
+
+        /* Signature element: segmented stability meter — each block IS a
+           buffered frame, lit as it fills, so the visual literally encodes
+           the agreement count instead of just decorating a percentage. */
+        .stab-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stab-segments {
+            flex: 1 1 auto;
+            display: flex;
+            gap: 3px;
+        }
+
+        .stab-segments .seg {
+            flex: 1 1 auto;
+            height: 10px;
+            border-radius: 2px;
+            background: #20242b;
+            transition: background 0.1s linear;
+        }
+
+        .stab-segments .seg.lit.agree {
+            background: var(--green);
+        }
+
+        .stab-segments .seg.lit.disagree {
+            background: var(--orange);
+        }
+
+        .rec-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            font-size: 0.74rem;
+            color: var(--muted);
+        }
+
+        .rec-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #3a3f47;
+            flex: 0 0 auto;
+        }
+
+        .rec-dot.on {
+            background: var(--red);
+            box-shadow: 0 0 6px var(--red);
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            .rec-dot.on {
+                animation: pulse 1.4s ease-in-out infinite;
+            }
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.45;
+            }
+        }
+
+        /* Sentence panel */
+        #sentence-box {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            font-family: var(--mono);
+            font-weight: 500;
+            font-size: clamp(1.1rem, 4vw, 1.5rem);
+            color: var(--cyan);
+            line-height: 1.35;
+            word-break: break-all;
+        }
+
+        #sentence-box.empty {
+            color: #394048;
+            font-style: italic;
+            font-size: 0.85rem;
+            font-family: var(--sans);
+        }
+
+        /* Bottom control bar */
+        .controls {
+            flex: 0 0 auto;
+            display: flex;
+            gap: 10px;
+            padding: 10px 16px;
+            border-top: 1px solid var(--border);
+            background: var(--panel-2);
+        }
+
+        button {
+            flex: 1 1 auto;
+            padding: 10px 14px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.05s;
+            background: #20242b;
+            color: var(--ink);
+        }
+
+        button:hover {
+            opacity: 0.85;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .btn-stop {
+            background: #260b0b;
+            color: #ff8a8a;
+            border-color: var(--red);
+            flex: 0 0 auto;
+            min-width: 96px;
+        }
+
+        .btn-stop:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* ── Audio & Speech panel ─────────────────────────────────────────── */
+        .audio-controls-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn-audio {
+            flex: 1 1 calc(50% - 5px);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 12px;
+            font-size: 0.78rem;
+            background: #191d22;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--ink);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-audio:hover {
+            background: var(--panel-2);
+            border-color: var(--muted);
+        }
+
+        .btn-audio.active {
+            background: rgba(34, 211, 200, 0.1);
+            border-color: var(--cyan);
+            color: var(--cyan);
+        }
+
+        .btn-audio.recording {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: var(--red);
+            color: #ff8a8a;
+        }
+
+        .btn-audio.recording .icon {
+            animation: pulse-red 1.2s infinite alternate;
+        }
+
+        @keyframes pulse-red {
+            0% { transform: scale(1); filter: drop-shadow(0 0 1px var(--red)); }
+            100% { transform: scale(1.15); filter: drop-shadow(0 0 6px var(--red)); }
+        }
+
+        .stt-status-text {
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-top: 8px;
+            font-family: var(--mono);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .stt-status-text::before {
+            content: "";
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--muted);
+            display: inline-block;
+        }
+
+        .stt-status-text.active::before {
+            background: var(--red);
+            box-shadow: 0 0 4px var(--red);
+            animation: pulse 1.4s ease-in-out infinite;
+        }
+
+        .icon {
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        /* ── Toggle gesture rec button styling ───────────────────────────── */
+        .btn-rec-toggle {
+            background: #122017;
+            color: var(--green);
+            border-color: var(--green);
+        }
+
+        .btn-rec-toggle.active {
+            background: #20151a;
+            color: var(--red);
+            border-color: var(--red);
+        }
+    </style>
+</head>
+
+<body>
+
+    <header class="topbar">
+        <div class="brand">
+            <h1>🤟 ASLO</h1>
+            <span class="tagline">Sign language → text, live</span>
+        </div>
+        <span class="badge starting" id="status-badge">Starting…</span>
+    </header>
+
+    <div id="error-banner"></div>
+
+    <main class="stage">
+        <!-- Camera -->
+        <div class="cam-panel">
+            <span class="cam-tag">CAM 01 · LIVE</span>
+            <img id="camera-feed" src="/video_feed" alt="Camera feed">
+            <div class="cam-placeholder" id="cam-placeholder">Camera not available</div>
+        </div>
+
+        <!-- Console -->
+        <div class="console">
+            <section class="panel">
+                <h2>Sign &rarr; text (live)</h2>
+                <div id="gesture-label">—</div>
+
+                <div class="meter-row">
+                    <span class="meter-label">CONF</span>
+                    <div class="meter-track">
+                        <div class="meter-fill" id="conf-bar"></div>
+                    </div>
+                    <span class="meter-val" id="conf-text">0%</span>
+                </div>
+
+                <div class="meter-row stab-row">
+                    <span class="meter-label">STAB</span>
+                    <div class="stab-segments" id="stab-segments"></div>
+                    <span class="meter-val" id="stab-text">0/0</span>
+                </div>
+
+                <div class="rec-row">
+                    <div class="rec-dot" id="rec-dot"></div>
+                    <span id="rec-label">Show START to begin recording</span>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>Audio & Speech</h2>
+                <div class="audio-controls-row">
+                    <button id="stt-btn" class="btn-audio" onclick="toggleVoiceRecording()">
+                        <svg class="icon" viewBox="0 0 24 24" width="16" height="16">
+                            <path fill="currentColor" d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z"/>
+                        </svg>
+                        <span id="stt-btn-text">Record Voice</span>
+                    </button>
+                    
+                    <button id="tts-toggle-btn" class="btn-audio active" onclick="toggleTTS()">
+                        <svg class="icon" viewBox="0 0 24 24" width="16" height="16">
+                            <path fill="currentColor" d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.85 14,18.71V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.77 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>
+                        </svg>
+                        <span id="tts-toggle-text">TTS Enabled</span>
+                    </button>
+                </div>
+                <div class="audio-controls-row">
+                    <button id="speak-btn" class="btn-audio" onclick="speakWholeSentence()">
+                        <svg class="icon" viewBox="0 0 24 24" width="16" height="16">
+                            <path fill="currentColor" d="M8,5.14V19.14L19,12.14L8,5.14Z"/>
+                        </svg>
+                        <span>Speak Sentence</span>
+                    </button>
+                </div>
+                <div id="stt-status" class="stt-status-text">Voice input ready</div>
+            </section>
+
+            <section class="panel grow">
+                <h2>Sentence</h2>
+                <div id="sentence-box" class="empty">(empty)</div>
+            </section>
+
+            <div class="controls">
+                <button class="btn-clear" onclick="clearSentence()">Clear sentence</button>
+                <button class="btn-rec-toggle" id="rec-toggle-btn" onclick="toggleGestureRecording()">Start Recording</button>
+                <button class="btn-stop" id="stop-btn" onclick="stopServer()">Stop server</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // ── Camera feed ─────────────────────────────────────────────────────────
+        // This <img> is the MJPEG stream from /video_feed, produced server-side
+        // by app.py (already includes hand landmarks drawn by main.py). We do
+        // NOT call getUserMedia() here — that would fight the Flask background
+        // thread for the same physical camera device.
+        const video = document.getElementById("camera-feed");
+        const placeholder = document.getElementById("cam-placeholder");
+
+        video.onerror = () => {
+            video.style.display = "none";
+            placeholder.style.display = "flex";
+        };
+
+        // ── Element refs ────────────────────────────────────────────────────────
+        const badge = document.getElementById("status-badge");
+        const gestureEl = document.getElementById("gesture-label");
+        const confBar = document.getElementById("conf-bar");
+        const confText = document.getElementById("conf-text");
+        const stabSegments = document.getElementById("stab-segments");
+        const stabText = document.getElementById("stab-text");
+        const recDot = document.getElementById("rec-dot");
+        const recLabel = document.getElementById("rec-label");
+        const sentenceEl = document.getElementById("sentence-box");
+        const errorEl = document.getElementById("error-banner");
+        const stopBtn = document.getElementById("stop-btn");
+        const recToggleBtn = document.getElementById("rec-toggle-btn");
+        const sttBtn = document.getElementById("stt-btn");
+        const sttBtnText = document.getElementById("stt-btn-text");
+        const ttsToggleBtn = document.getElementById("tts-toggle-btn");
+        const ttsToggleText = document.getElementById("tts-toggle-text");
+        const sttStatus = document.getElementById("stt-status");
+
+        // ── Web Speech API State ───────────────────────────────────────────────
+        let isTTSEnabled = true;
+        let isRecordingVoice = false;
+        let lastSentenceText = "";
+        let lastActiveState = false;
+        let recognition = null;
+
+        // Initialize Speech Recognition if supported
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isRecordingVoice = true;
+                sttBtn.classList.add("recording");
+                sttBtnText.textContent = "Stop Recording";
+                sttStatus.textContent = "Listening — speak clearly...";
+                sttStatus.classList.add("active");
+            };
+
+            recognition.onresult = (event) => {
+                const result = event.results[event.results.length - 1];
+                if (result.isFinal) {
+                    const transcript = result[0].transcript.trim();
+                    if (transcript) {
+                        sttStatus.textContent = `Heard: "${transcript}"`;
+                        appendVoiceText(transcript);
+                    }
+                }
+            };
+
+            recognition.onerror = (event) => {
+                console.error("Speech Recognition Error:", event.error);
+                if (event.error === 'not-allowed') {
+                    sttStatus.textContent = "Permission denied. Check microphone settings.";
+                    stopVoiceRecordingLocally();
+                } else {
+                    sttStatus.textContent = `Error: ${event.error}`;
+                }
+            };
+
+            recognition.onend = () => {
+                if (isRecordingVoice) {
+                    try {
+                        recognition.start();
+                    } catch (e) {
+                        stopVoiceRecordingLocally();
+                    }
+                } else {
+                    stopVoiceRecordingLocally();
+                }
+            };
+        } else {
+            sttBtn.disabled = true;
+            sttBtn.style.opacity = "0.5";
+            sttBtn.style.cursor = "not-allowed";
+            sttBtnText.textContent = "STT Unsupported";
+            sttStatus.textContent = "Speech recognition is not supported in this browser.";
+        }
+
+        // ── Speech-to-Text functions ──────────────────────────────────────────
+        function toggleVoiceRecording() {
+            if (!recognition) return;
+            if (isRecordingVoice) {
+                isRecordingVoice = false;
+                recognition.stop();
+            } else {
+                sttStatus.textContent = "Requesting mic access...";
+                recognition.start();
+            }
+        }
+
+        function stopVoiceRecordingLocally() {
+            isRecordingVoice = false;
+            sttBtn.classList.remove("recording");
+            sttBtnText.textContent = "Record Voice";
+            sttStatus.textContent = "Voice input ready";
+            sttStatus.classList.remove("active");
+        }
+
+        function appendVoiceText(text) {
+            fetch("/append_text", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: text })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) {
+                    console.log("Appended voice text successfully:", text);
+                }
+            })
+            .catch(e => console.error("Error appending voice text:", e));
+        }
+
+        // ── Text-to-Speech functions ──────────────────────────────────────────
+        function toggleTTS() {
+            isTTSEnabled = !isTTSEnabled;
+            if (isTTSEnabled) {
+                ttsToggleBtn.classList.add("active");
+                ttsToggleText.textContent = "TTS Enabled";
+            } else {
+                ttsToggleBtn.classList.remove("active");
+                ttsToggleText.textContent = "TTS Muted";
+                window.speechSynthesis.cancel();
+            }
+        }
+
+        function speakText(text) {
+            if (!isTTSEnabled || !text.trim()) return;
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function speakWholeSentence() {
+            const sentenceText = sentenceEl.textContent;
+            if (sentenceText && sentenceText !== "(empty)") {
+                const oldEnabled = isTTSEnabled;
+                isTTSEnabled = true;
+                speakText(sentenceText);
+                isTTSEnabled = oldEnabled;
+            }
+        }
+
+        // ── Gesture Recording toggle ───────────────────────────────────────────
+        let currentGestureActive = false;
+
+        function toggleGestureRecording() {
+            const nextState = !currentGestureActive;
+            fetch("/toggle_active", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ active: nextState })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) {
+                    updateGestureRecUI(nextState);
+                }
+            })
+            .catch(e => console.error("Error toggling active state:", e));
+        }
+
+        function updateGestureRecUI(active) {
+            currentGestureActive = active;
+            if (active) {
+                recToggleBtn.classList.add("active");
+                recToggleBtn.textContent = "Pause Recording";
+            } else {
+                recToggleBtn.classList.remove("active");
+                recToggleBtn.textContent = "Start Recording";
+            }
+        }
+
+        function setBadge(status) {
+            badge.className = "badge " + status;
+            const labels = {
+                running: "Running",
+                stopped: "Stopped",
+                starting: "Starting…",
+                error: "Error"
+            };
+            badge.textContent = labels[status] || status;
+        }
+
+        // Build/refresh the segmented stability meter. Each segment is one
+        // buffered frame — lit green if the buffer agrees on a single
+        // gesture, orange if it doesn't (matches main.py's STABILITY_FRAMES).
+        let lastBufMax = -1;
+        function renderStability(bufFill, bufMax, agreeing) {
+            if (bufMax !== lastBufMax) {
+                stabSegments.innerHTML = "";
+                for (let i = 0; i < bufMax; i++) {
+                    const seg = document.createElement("div");
+                    seg.className = "seg";
+                    stabSegments.appendChild(seg);
+                }
+                lastBufMax = bufMax;
+            }
+            const segs = stabSegments.children;
+            for (let i = 0; i < segs.length; i++) {
+                segs[i].classList.remove("lit", "agree", "disagree");
+                if (i < bufFill) {
+                    segs[i].classList.add("lit", agreeing ? "agree" : "disagree");
+                }
+            }
+            stabText.textContent = bufFill + "/" + bufMax;
+        }
+
+        function poll() {
+            fetch("/gesture")
+                .then(r => r.json())
+                .then(data => {
+                    errorEl.style.display = "none";
+
+                    if (data.status === "error") {
+                        setBadge("error");
+                        errorEl.style.display = "block";
+                        errorEl.textContent = "Error: " + data.error;
+                    } else {
+                        setBadge(data.status || "running");
+                    }
+
+                    gestureEl.textContent = data.live_gesture || "—";
+
+                    const pct = Math.round((data.live_conf || 0) * 100);
+                    confBar.style.width = pct + "%";
+                    confBar.style.background = pct >= 50 ? "var(--green)" : "var(--orange)";
+                    confText.textContent = pct + "%";
+
+                    renderStability(data.buffer_fill || 0, data.buffer_max || 1, !!data.agreeing);
+
+                    const active = !!data.active;
+                    if (active) {
+                        recDot.className = "rec-dot on";
+                        recLabel.textContent = "Recording — show STOP to pause";
+                    } else {
+                        recDot.className = "rec-dot";
+                        recLabel.textContent = "Paused — show START to begin recording";
+                    }
+                    updateGestureRecUI(active);
+
+                    const word = data.word || "";
+                    if (word.trim() === "") {
+                        sentenceEl.textContent = "(empty)";
+                        sentenceEl.className = "empty";
+                    } else {
+                        sentenceEl.textContent = word;
+                        sentenceEl.className = "";
+                    }
+
+                    // ── TTS Triggers ──
+                    if (word !== lastSentenceText) {
+                        if (word.length > lastSentenceText.length) {
+                            const newPart = word.slice(lastSentenceText.length).trim();
+                            if (newPart && newPart !== "(empty)") {
+                                speakText(newPart);
+                            }
+                        }
+                        lastSentenceText = word;
+                    }
+
+                    // If active goes from true to false: stop record and play TTS
+                    if (lastActiveState && !active) {
+                        if (word && word !== "(empty)") {
+                            speakText("Sentence completed: " + word);
+                        }
+                        if (isRecordingVoice) {
+                            isRecordingVoice = false;
+                            if (recognition) recognition.stop();
+                        }
+                    }
+                    lastActiveState = active;
+                })
+                .catch(() => {
+                    setBadge("error");
+                    errorEl.style.display = "block";
+                    errorEl.textContent = "Cannot reach Flask server — is app.py running?";
+                });
+        }
+
+        function clearSentence() {
+            fetch("/clear", { method: "POST" })
+                .then(() => {
+                    sentenceEl.textContent = "(empty)";
+                    sentenceEl.className = "empty";
+                });
+        }
+
+        // ── Stop server ──────────────────────────────────────────────────────────
+        let pollTimer = null;
+
+        function stopServer() {
+            if (!confirm("Stop the server? This releases the camera and closes app.py.")) {
+                return;
+            }
+            stopBtn.disabled = true;
+            stopBtn.textContent = "Stopping…";
+
+            fetch("/shutdown", { method: "POST" }).catch(() => {
+                // app.py exits right after responding, so the connection
+                // dropping before a reply arrives is expected, not an error.
+            });
+
+            if (pollTimer) clearInterval(pollTimer);
+            video.src = "";
+            setBadge("stopped");
+            stopBtn.textContent = "Stopped";
+        }
+
+        pollTimer = setInterval(poll, 300);
+        poll();
+    </script>
+
+</body>
+
+</html>

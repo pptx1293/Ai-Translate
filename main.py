@@ -41,42 +41,33 @@ gesture_buffer : collections.deque = collections.deque(maxlen=STABILITY_FRAMES)
 
 # ── MediaPipe — separate Hands + Pose (face pipeline never runs) ─────────────
 mp_hands   = mp.solutions.hands
-mp_pose    = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
-hands_detector = mp_hands.Hands(
-    static_image_mode        = False,
-    max_num_hands            = 2,
-    model_complexity         = 1,
-    min_detection_confidence = 0.5,
-    min_tracking_confidence  = 0.5,
-)
-pose_detector = mp_pose.Pose(
-    static_image_mode        = False,
-    model_complexity         = 1,
-    smooth_landmarks         = True,
-    enable_segmentation      = False,
-    min_detection_confidence = 0.5,
-    min_tracking_confidence  = 0.5,
-)
+def make_hands_detector() -> mp_hands.Hands:
+    return mp_hands.Hands(
+        static_image_mode        = False,
+        max_num_hands            = 2,
+        model_complexity         = 1,
+        min_detection_confidence = 0.5,
+        min_tracking_confidence  = 0.5,
+    )
 
 draw_hand_pt   = mp_drawing.DrawingSpec(color=CLR_GREEN,  thickness=1, circle_radius=2)
 draw_hand_ln   = mp_drawing.DrawingSpec(color=CLR_WHITE,  thickness=1)
 
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,  TARGET_W)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_H)
-cap.set(cv2.CAP_PROP_FPS, 30)
-
-print("[START] Face pipeline OFF — using separate Hands + Pose.")
-print("Q=quit  C=clear  Z=undo")
+def open_camera() -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  TARGET_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_H)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    return cap
 
 
 # ── Result wrapper ────────────────────────────────────────────────────────────
 class _Results:
 
-    def __init__(self, hands_res, pose_res):
-        self.pose_landmarks       = pose_res.pose_landmarks if pose_res else None
+    def __init__(self, hands_res):
+        self.pose_landmarks       = None
         self.left_hand_landmarks  = None
         self.right_hand_landmarks = None
 
@@ -94,17 +85,10 @@ class _Results:
 
 
 # ── HUD ──────────────────────────────────────────────────────────────────────
-ARM_CONNECTIONS = [
-    (11, 13), (13, 15),            # left:  shoulder→elbow→wrist
-    (12, 14), (14, 16),            # right: shoulder→elbow→wrist
-    (11, 12),                      # shoulder line
-    (15, 17), (15, 19), (15, 21),  # left wrist tips
-    (16, 18), (16, 20), (16, 22),  # right wrist tips
-]
 
 
 def _draw_skeleton(frame, results) -> None:
-    """Draw hand meshes and arm skeleton only (no face, no legs)."""
+    """Draw hand meshes only."""
     if results.left_hand_landmarks:
         mp_drawing.draw_landmarks(
             frame, results.left_hand_landmarks,
@@ -113,21 +97,6 @@ def _draw_skeleton(frame, results) -> None:
         mp_drawing.draw_landmarks(
             frame, results.right_hand_landmarks,
             mp_hands.HAND_CONNECTIONS, draw_hand_pt, draw_hand_ln)
-
-    if results.pose_landmarks:
-        lms  = results.pose_landmarks.landmark
-        h, w = frame.shape[:2]
-        for a, b in ARM_CONNECTIONS:
-            if lms[a].visibility > 0.4 and lms[b].visibility > 0.4:
-                cv2.line(frame,
-                         (int(lms[a].x * w), int(lms[a].y * h)),
-                         (int(lms[b].x * w), int(lms[b].y * h)),
-                         CLR_GRAY, 1)
-        for i in range(11, 23):
-            if lms[i].visibility > 0.4:
-                cv2.circle(frame,
-                           (int(lms[i].x * w), int(lms[i].y * h)),
-                           3, CLR_ORANGE, -1)
 
 
 def _draw_hud(frame, gesture: str, conf: float) -> None:
@@ -167,27 +136,24 @@ def _draw_hud(frame, gesture: str, conf: float) -> None:
                 (12, TARGET_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.42, CLR_GRAY, 1)
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        break
+# ── Helper functions for modular import ───────────────────────────────────────
 
-    frame = cv2.resize(frame, (TARGET_W, TARGET_H))
-    frame = cv2.flip(frame, 1)          # mirror so gestures feel natural
-
+def process_frame(frame, hands_det) -> tuple[_Results, bool]:
     rgb                 = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     rgb.flags.writeable = False
-    hands_res           = hands_detector.process(rgb)
-    pose_res            = pose_detector.process(rgb)
+    hands_res           = hands_det.process(rgb)
     rgb.flags.writeable = True
 
-    results  = _Results(hands_res, pose_res)
-    has_hand = results.left_hand_landmarks or results.right_hand_landmarks
+    results  = _Results(hands_res)
+    has_hand = bool(results.left_hand_landmarks or results.right_hand_landmarks)
+    return results, has_hand
 
-    gesture = "No Hand Detected"
-    conf    = 0.0
-    stable  = None
+
+def detect_gesture(results, has_hand, gesture_buf) -> tuple[str, float, float, str | None]:
+    gesture   = "No Hand Detected"
+    conf      = 0.0
+    threshold = CONFIDENCE_THRESHOLD
+    stable    = None
 
     if has_hand:
         gesture, conf = tst.translate_frame(results)
@@ -195,61 +161,115 @@ while cap.isOpened():
         if gesture == "SPACE":
             gesture = " "
         if conf >= CONFIDENCE_THRESHOLD:
-            gesture_buffer.append(gesture)
+            gesture_buf.append(gesture)
         else:
-            gesture_buffer.clear()
+            gesture_buf.clear()
             gesture = "Analyzing…"
 
         # A gesture is "stable" when the full buffer holds the same label
-        if len(gesture_buffer) == STABILITY_FRAMES and len(set(gesture_buffer)) == 1:
-            stable = gesture_buffer[0]
+        if len(gesture_buf) == STABILITY_FRAMES and len(set(gesture_buf)) == 1:
+            stable = gesture_buf[0]
     else:
-        gesture_buffer.clear()
+        gesture_buf.clear()
         _reset_tst_buffer()
 
-    # ── State machine ──────────────────────────────────────────────────────
+    return gesture, conf, threshold, stable
+
+
+def run_state_machine(
+    stable, gesture, conf, threshold,
+    sent, act, last_w, last_app_ts, gesture_buf
+) -> tuple[list, bool, str, float, collections.deque]:
     now = time.time()
     if stable:
-        if stable == "START" and not active:
-            active = True
-            gesture_buffer.clear()
+        if stable == "START" and not act:
+            act = True
+            gesture_buf.clear()
             _reset_tst_buffer()
             print("[STATE] Recording STARTED")
 
-        elif stable == "STOP" and active:
-            active = False
-            gesture_buffer.clear()
+        elif stable == "STOP" and act:
+            act = False
+            gesture_buf.clear()
             _reset_tst_buffer()
             print("[STATE] Recording STOPPED")
 
-        elif active and stable not in CONTROL_GESTURES:
-            time_ok = (now - last_append_ts) >= COOLDOWN_SEC
-            novel   = (stable != last_word)
-            if time_ok and novel:
-                sentence.append(stable)
-                last_word      = stable
-                last_append_ts = now
-                gesture_buffer.clear()
+        elif act and stable == "BACKSPACE":
+            time_ok = (now - last_app_ts) >= COOLDOWN_SEC
+            if time_ok:
+                if sent:
+                    removed = sent.pop()
+                    print(f"[WORD]  Removed last word: '{removed}'  →  {' '.join(sent)}")
+                else:
+                    print("[WORD]  Sentence already empty, cannot backspace")
+                last_w         = ""
+                last_app_ts    = now
+                gesture_buf.clear()
                 _reset_tst_buffer()
-                print(f"[WORD]  {stable}  →  {' '.join(sentence)}")
 
+        elif act and stable not in CONTROL_GESTURES:
+            time_ok = (now - last_app_ts) >= COOLDOWN_SEC
+            novel   = stable
+            if time_ok and novel:
+                sent.append(stable)
+                last_w         = stable
+                last_app_ts    = now
+                gesture_buf.clear()
+                _reset_tst_buffer()
+                print(f"[WORD]  {stable}  →  {' '.join(sent)}")
+
+    return sent, act, last_w, last_app_ts, gesture_buf
+
+
+def draw_hands(frame, results) -> None:
     _draw_skeleton(frame, results)
-    _draw_hud(frame, gesture, conf)
-    cv2.imshow("Gesture → Sentence", frame)
 
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord("q"):
-        break
-    elif key == ord("c"):
-        sentence.clear()
-        last_word = ""
-        print("[CLEAR] Sentence cleared")
-    elif key == ord("z") and sentence:
-        removed = sentence.pop()
-        last_word = sentence[-1] if sentence else ""
-        print(f"[UNDO]  Removed '{removed}'")
 
-cap.release()
-cv2.destroyAllWindows()
-hands_detector.close()
-pose_detector.close()
+def run_standalone() -> None:
+    global sentence, active, last_word, last_append_ts, gesture_buffer
+
+    hands_det = make_hands_detector()
+    camera    = open_camera()
+
+    print("[START] Hand-only mode — no body/pose overlay.")
+    print("Q=quit  C=clear  Z=undo")
+
+    while camera.isOpened():
+        ret, frame = camera.read()
+        if not ret:
+            break
+
+        frame = cv2.resize(frame, (TARGET_W, TARGET_H))
+        frame = cv2.flip(frame, 1)
+
+        results, has_hand = process_frame(frame, hands_det)
+        gesture, conf, threshold, stable = detect_gesture(results, has_hand, gesture_buffer)
+
+        sentence, active, last_word, last_append_ts, gesture_buffer = run_state_machine(
+            stable, gesture, conf, threshold,
+            sentence, active, last_word, last_append_ts, gesture_buffer,
+        )
+
+        draw_hands(frame, results)
+        _draw_hud(frame, gesture, conf)
+        cv2.imshow("Gesture → Sentence", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+        elif key == ord("c"):
+            sentence.clear()
+            last_word = ""
+            print("[CLEAR] Sentence cleared")
+        elif key == ord("z") and sentence:
+            removed = sentence.pop()
+            last_word = sentence[-1] if sentence else ""
+            print(f"[UNDO]  Removed '{removed}'")
+
+    camera.release()
+    cv2.destroyAllWindows()
+    hands_det.close()
+
+
+if __name__ == "__main__":
+    run_standalone()

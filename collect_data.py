@@ -1,3 +1,10 @@
+"""
+collect_data.py — Phase 1: Export hand landmark features to CSV.
+
+Hand-only mode: no Pose detector, no arm/body landmarks.
+Feature extraction imported from features.py (single source of truth).
+"""
+
 import csv
 import glob
 import os
@@ -6,6 +13,8 @@ import sys
 import cv2
 import mediapipe as mp
 import numpy as np
+
+from features import extract_features, FEATURE_LEN
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -16,14 +25,11 @@ CSV_FILE     = "gesture_data.csv"
 TARGET_W     = 1280
 TARGET_H     = 720
 
-ARM_IDX      = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
-FEATURE_LEN  = len(ARM_IDX) * 3 + 21 * 3 + 21 * 3   # 162
 CTRL_CLASSES = {"neutral", "idle"}
 IMG_EXTS     = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
 
-# ── MediaPipe — separate Hands + Pose, NO Holistic, NO face ──────────────────
+# ── MediaPipe — Hands only, no Pose ──────────────────────────────────────────
 mp_hands = mp.solutions.hands
-mp_pose  = mp.solutions.pose
 
 hands_detector = mp_hands.Hands(
     static_image_mode        = True,
@@ -31,25 +37,12 @@ hands_detector = mp_hands.Hands(
     model_complexity         = 1,
     min_detection_confidence = 0.4,
 )
-pose_detector = mp_pose.Pose(
-    static_image_mode        = True,
-    model_complexity         = 2,
-    enable_segmentation      = False,
-    min_detection_confidence = 0.4,
-)
 
 
-# ── Result wrapper — IDENTICAL to main.py _Results ───────────────────────────
+# ── Result wrapper ────────────────────────────────────────────────────────────
 class _Results:
-    """
-    After cv2.flip(frame, 1) MediaPipe Hands labels are mirror-swapped:
-      MP "Left"  on flipped image = user's physical RIGHT hand
-      MP "Right" on flipped image = user's physical LEFT  hand
-    We store them swapped so attributes always reflect the user's real hand.
-    Must match main.py _Results exactly.
-    """
-    def __init__(self, hands_res, pose_res):
-        self.pose_landmarks       = pose_res.pose_landmarks if pose_res else None
+    def __init__(self, hands_res):
+        self.pose_landmarks       = None
         self.left_hand_landmarks  = None
         self.right_hand_landmarks = None
         if hands_res and hands_res.multi_hand_landmarks:
@@ -64,98 +57,106 @@ class _Results:
                     self.left_hand_landmarks  = lms   # swapped
 
 
-# ── Feature extraction — IDENTICAL to tst.py _extract() ──────────────────────
-def _coords(lm) -> np.ndarray:
-    """Invert x to match flipped-image coordinate space."""
-    return np.array([1.0 - lm.x, lm.y, lm.z], dtype=np.float32)
-
-
-def _normalise_points(points: list[np.ndarray], origin: np.ndarray, scale: float) -> list[float]:
-    if scale < 1e-6:
-        scale = 1.0
-    normalised: list[float] = []
-    for pt in points:
-        normalised.extend(((pt - origin) / scale).tolist())
-    return normalised
-
-
-def _normalised_hand(hand_landmarks) -> list[float]:
-    points = [_coords(lm) for lm in hand_landmarks.landmark]
-    wrist = points[0]
-    scale = max(float(np.linalg.norm((pt - wrist)[:2])) for pt in points)
-    return _normalise_points(points, wrist, scale)
-
-
-def extract_features(results) -> list[float]:
-    """
-    162-dim feature vector.
-    MUST be byte-for-byte identical to tst.py _extract().
-    Layout: [arm×36] [left_hand×63] [right_hand×63]
-    """
-    feats: list[float] = []
-
-    # 1 ── Arm pose (index-pair swap + x inversion)
-    if results.pose_landmarks:
-        lms = results.pose_landmarks.landmark
-        arm_points: list[np.ndarray] = []
-        for i in ARM_IDX:
-            j = (i + 1) if (i % 2 != 0) else (i - 1)
-            arm_points.append(_coords(lms[j]) if j < len(lms) else np.zeros(3, dtype=np.float32))
-        shoulder_mid   = (arm_points[0] + arm_points[1]) / 2.0
-        shoulder_width = float(np.linalg.norm((arm_points[0] - arm_points[1])[:2]))
-        feats += _normalise_points(arm_points, shoulder_mid, shoulder_width)
-    else:
-        feats += [0.0] * (len(ARM_IDX) * 3)
-
-    # 2 ── Left hand (physical left — already corrected by _Results swap)
-    if results.left_hand_landmarks:
-        feats += _normalised_hand(results.left_hand_landmarks)
-    else:
-        feats += [0.0] * (21 * 3)
-
-    # 3 ── Right hand (physical right — already corrected by _Results swap)
-    if results.right_hand_landmarks:
-        feats += _normalised_hand(results.right_hand_landmarks)
-    else:
-        feats += [0.0] * (21 * 3)
-
-    return feats
-
-
 # ── Processing ────────────────────────────────────────────────────────────────
+_checksum_printed = False
+
+
 def process_folder(folder: str, label: str, writer) -> tuple[int, int]:
-    paths: list[str] = []
-    for ext in IMG_EXTS:
-        paths.extend(glob.glob(os.path.join(folder, ext)))
-    if not paths:
-        return 0, 0
+    global _checksum_printed
+
+    # Find all images recursively
+    img_paths = []
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                img_paths.append(os.path.join(root, file))
+    
+    # Find all videos recursively
+    video_paths = []
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif', '.flv']:
+                video_paths.append(os.path.join(root, file))
 
     is_ctrl = label in CTRL_CLASSES
     success = 0
+    total_sources = len(img_paths) + len(video_paths)
 
-    for img_path in sorted(paths):
+    if total_sources == 0:
+        return 0, 0
+
+    # 1. Process Images
+    for img_path in sorted(img_paths):
         frame = cv2.imread(img_path)
         if frame is None:
-            print(f"   ⚠  Unreadable: {img_path}")
+            print(f"   WARNING  Unreadable image: {img_path}")
             continue
 
-        # ── Must match main.py frame processing exactly ──
         frame = cv2.resize(frame, (TARGET_W, TARGET_H))
-        frame = cv2.flip(frame, 1)                      # ← same flip as main.py
+        frame = cv2.flip(frame, 1)
         rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         hands_res = hands_detector.process(rgb)
-        pose_res  = pose_detector.process(rgb)
-        results   = _Results(hands_res, pose_res)
+        results   = _Results(hands_res)
 
         has_hand = results.left_hand_landmarks or results.right_hand_landmarks
         if not is_ctrl and not has_hand:
             continue
 
-        writer.writerow([label] + extract_features(results))
+        feats = extract_features(results)
+
+        if not _checksum_printed:
+            print(f"[SYNC CHECK] First feature checksum = {sum(feats):.6f}")
+            print(f"             Compare to tst.py startup checksum.")
+            _checksum_printed = True
+
+        writer.writerow([label] + feats)
         success += 1
 
-    return success, len(paths)
+    # 2. Process Videos
+    for video_path in sorted(video_paths):
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"   WARNING  Unreadable video: {video_path}")
+            continue
+
+        frame_idx = 0
+        video_success = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_idx += 1
+            frame = cv2.resize(frame, (TARGET_W, TARGET_H))
+            frame = cv2.flip(frame, 1)
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            hands_res = hands_detector.process(rgb)
+            results   = _Results(hands_res)
+
+            has_hand = results.left_hand_landmarks or results.right_hand_landmarks
+            if not is_ctrl and not has_hand:
+                continue
+
+            feats = extract_features(results)
+
+            if not _checksum_printed:
+                print(f"[SYNC CHECK] First feature checksum = {sum(feats):.6f}")
+                print(f"             Compare to tst.py startup checksum.")
+                _checksum_printed = True
+
+            writer.writerow([label] + feats)
+            success += 1
+            video_success += 1
+
+        cap.release()
+        if video_success > 0:
+            print(f" (video '{os.path.basename(video_path)}': {video_success}/{frame_idx} frames exported)", end="", flush=True)
+
+    return success, total_sources
 
 
 def main() -> None:
@@ -168,7 +169,6 @@ def main() -> None:
         print(f"[ERROR] No sub-folders in '{IMAGE_DIR}'")
         sys.exit(1)
 
-    # Always rebuild CSV from scratch so no stale mismatched rows remain
     if os.path.isfile(CSV_FILE):
         os.remove(CSV_FILE)
         print(f"[CSV] Removed old '{CSV_FILE}' — rebuilding from scratch.")
@@ -179,19 +179,18 @@ def main() -> None:
         writer.writerow(["label"] + [f"f{i}" for i in range(FEATURE_LEN)])
         print(f"[CSV] Created '{CSV_FILE}' ({FEATURE_LEN} features per row)\n")
 
-        print(f"── {len(subfolders)} categories ──")
+        print(f"-- {len(subfolders)} categories --")
         for folder in subfolders:
             label = os.path.basename(folder).strip().lower()
-            print(f"  ➔  '{label}' ...", end=" ", flush=True)
+            print(f"  ->  '{label}' ...", end=" ", flush=True)
             ok, total = process_folder(folder, label, writer)
             print(f"{ok}/{total} rows exported")
             total_rows += ok
             fh.flush()
 
     hands_detector.close()
-    pose_detector.close()
     print(f"\n[DONE] {total_rows} rows written to '{CSV_FILE}'")
-    print("       → Now run train_model.py to rebuild the model.")
+    print("       -> Now run train_model.py to rebuild the model.")
 
 
 if __name__ == "__main__":
